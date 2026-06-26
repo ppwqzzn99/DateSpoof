@@ -26,6 +26,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+// å¼ºå¶ UTF-8 ç¼è¯ï¼é²æ­¢ Windows ä¸­æç³»ç»ä¸æºç ä¸­æä¹±ç 
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
 
     kotlinOptions {
         jvmTarget = '17'

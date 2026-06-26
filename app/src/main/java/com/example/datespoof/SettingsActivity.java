@@ -20,8 +20,11 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Calendar;
 
 public class SettingsActivity extends AppCompatActivity {
@@ -163,13 +166,15 @@ public class SettingsActivity extends AppCompatActivity {
             String jsonStr = json.toString(2);
 
             // ====== åå¥ä¸»è·¯å¾ ======
-            FileWriter writer1 = new FileWriter(CONFIG_PATH_PRIMARY);
+            OutputStreamWriter writer1 = new OutputStreamWriter(
+                    new FileOutputStream(CONFIG_PATH_PRIMARY), StandardCharsets.UTF_8);
             writer1.write(jsonStr);
             writer1.close();
             fixPermissions(CONFIG_PATH_PRIMARY);
 
             // ====== åå¥ /sdcard/ å¯æ¬ ======
-            FileWriter writer2 = new FileWriter(CONFIG_PATH_SDCARD);
+            OutputStreamWriter writer2 = new OutputStreamWriter(
+                    new FileOutputStream(CONFIG_PATH_SDCARD), StandardCharsets.UTF_8);
             writer2.write(jsonStr);
             writer2.close();
             fixPermissions(CONFIG_PATH_SDCARD);
@@ -267,7 +272,8 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private String readFileContent(File file) throws Exception {
-        BufferedReader reader = new BufferedReader(new FileReader(file));
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
         StringBuilder sb = new StringBuilder();
         String line;
         while ((line = reader.readLine()) != null) sb.append(line).append("\n");

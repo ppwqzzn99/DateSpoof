@@ -2,7 +2,9 @@ package com.example.datespoof;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.Calendar;
 import java.util.Date;
 
@@ -178,7 +180,8 @@ public class HookMain implements IXposedHookLoadPackage {
 
             try {
                 StringBuilder sb = new StringBuilder();
-                BufferedReader reader = new BufferedReader(new FileReader(configFile));
+                BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(configFile), StandardCharsets.UTF_8));
                 String line;
                 while ((line = reader.readLine()) != null) {
                     sb.append(line);
