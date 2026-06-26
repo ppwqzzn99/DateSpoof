@@ -28,7 +28,7 @@ android {
     }
 }
 
-// å¼ºå¶ UTF-8 ç¼è¯ï¼é²æ­¢ Windows ä¸­æç³»ç»ä¸æºç ä¸­æä¹±ç 
+// 强制 UTF-8 编译，防止 Windows 中文系统下源码中文乱码
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
