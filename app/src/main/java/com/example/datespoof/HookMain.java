@@ -146,13 +146,27 @@ public class HookMain implements IXposedHookLoadPackage {
                 XSharedPreferences prefs = new XSharedPreferences(MODULE_PACKAGE, PREFS_FILE);
                 prefs.reload();
 
-                enabled = prefs.getBoolean("enabled", true);
+                // ── 诊断：打印所有读到的原始值 ──
+                String rawYear  = prefs.getString("year",  "★未找到★");
+                String rawMonth = prefs.getString("month", "★未找到★");
+                String rawDay   = prefs.getString("day",   "★未找到★");
+                boolean rawEnabled = prefs.getBoolean("enabled", true);
+                XposedBridge.log("[DateSpoof] 诊断 raw: enabled=" + rawEnabled
+                        + " year=" + rawYear + " month=" + rawMonth + " day=" + rawDay);
+
+                enabled = rawEnabled;
 
                 if (enabled) {
-                    // ⚠️ EditTextPreference 始终存 String，不能用 getInt() —— 那是之前没生效的根因
-                    int year  = Integer.parseInt(prefs.getString("year",  "2025"));
-                    int month = Integer.parseInt(prefs.getString("month", "1"));
-                    int day   = Integer.parseInt(prefs.getString("day",   "1"));
+                    // 如果读取值为占位符（pref 文件不存在或无此 key），使用默认值
+                    if ("★未找到★".equals(rawYear) || "★未找到★".equals(rawMonth) || "★未找到★".equals(rawDay)) {
+                        XposedBridge.log("[DateSpoof] ⚠ pref 文件缺少 key，使用默认值 2025-1-1。请先打开 DateSpoof 设置界面并点击「保存设置」！");
+                        rawYear  = "2025";
+                        rawMonth = "1";
+                        rawDay   = "1";
+                    }
+                    int year  = Integer.parseInt(rawYear);
+                    int month = Integer.parseInt(rawMonth);
+                    int day   = Integer.parseInt(rawDay);
 
                     Calendar targetCal = Calendar.getInstance();
                     targetCal.set(year, month - 1, day, 0, 0, 0);
@@ -167,7 +181,8 @@ public class HookMain implements IXposedHookLoadPackage {
                             + (timeOffsetMillis / 86400000) + " 天)");
                 }
             } catch (Throwable t) {
-                XposedBridge.log("[DateSpoof] 配置加载异常: " + t.getMessage());
+                XposedBridge.log("[DateSpoof] ✗ 配置加载异常: " + t.getClass().getSimpleName() + " — " + t.getMessage());
+                XposedBridge.log("[DateSpoof]    可能原因: 1) 设置 App 尚未首次打开保存 2) pref 文件权限问题 3) 日期值非法");
                 enabled = false;
             }
 
