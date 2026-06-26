@@ -1,20 +1,25 @@
 package com.example.datespoof;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.util.Calendar;
 import java.util.Date;
 
+import org.json.JSONObject;
+
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class HookMain implements IXposedHookLoadPackage {
 
-    private static final String MODULE_PACKAGE = "com.example.datespoof";
-    private static final String PREFS_FILE = "com.example.datespoof_preferences";
     private static final String TARGET_PACKAGE = "com.zyyad.game";
+
+    // 配置文件路径（/sdcard/ 下，设置 App 和目标 App 都能访问）
+    private static final String CONFIG_PATH = "/sdcard/DateSpoof/config.json";
 
     private static volatile boolean configLoaded = false;
     private static volatile boolean enabled = false;
@@ -22,9 +27,7 @@ public class HookMain implements IXposedHookLoadPackage {
 
     private static final Object CONFIG_LOCK = new Object();
 
-    // ====== ThreadLocal 防重入标记 ======
-    // 标记本线程刚才是否从 currentTimeMillis() 拿过伪装值，
-    // 如果拿了，setTimeInMillis/Date(long) 就不应再加偏移
+    // 防重入标记
     private static final ThreadLocal<Boolean> spoofedByCurrentTimeMillis = new ThreadLocal<>();
 
     @Override
@@ -35,7 +38,7 @@ public class HookMain implements IXposedHookLoadPackage {
 
         XposedBridge.log("[DateSpoof] ====== 模块已加载 ======");
         XposedBridge.log("[DateSpoof] 目标包名: " + lpparam.packageName);
-        XposedBridge.log("[DateSpoof] 进程名:   " + lpparam.processName);
+        XposedBridge.log("[DateSpoof] 配置路径: " + CONFIG_PATH);
 
         ensureConfig();
 
@@ -47,9 +50,7 @@ public class HookMain implements IXposedHookLoadPackage {
         XposedBridge.log("[DateSpoof] 配置: 偏移=" + timeOffsetMillis + " ms ("
                 + (timeOffsetMillis / 86400000) + " 天)");
 
-        // ━━━ Hook 1：System.currentTimeMillis() ━━━
-        // native 方法，在某些 Android 版本上 LSPosed 可能无法 Hook。
-        // 如果成功 Hook，会设置 ThreadLocal 标记辅助后续 Hook 避免双倍偏移。
+        // ====== Hook 1: System.currentTimeMillis() ======
         try {
             XposedHelpers.findAndHookMethod(
                 java.lang.System.class,
@@ -59,21 +60,17 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         if (!enabled) return;
                         long original = (long) param.getResult();
-                        long spoofed = original + timeOffsetMillis;
-                        param.setResult(spoofed);
-                        // 标记：这个线程刚才拿了伪装时间
+                        param.setResult(original + timeOffsetMillis);
                         spoofedByCurrentTimeMillis.set(true);
                     }
                 }
             );
             XposedBridge.log("[DateSpoof] ✓ Hook1 System.currentTimeMillis() — 已安装");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Hook1 System.currentTimeMillis() — 安装失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] ✗ Hook1 失败: " + t.getMessage());
         }
 
-        // ━━━ Hook 2：Calendar.setTimeInMillis(long) ━━━
-        // 主力 Hook。Calendar 内部存储时间必走这个方法。
-        // 如果 ThreadLocal 标记已被设置（当前毫秒值来自 Hook1），不再加偏移。
+        // ====== Hook 2: Calendar.setTimeInMillis(long) ======
         try {
             XposedHelpers.findAndHookMethod(
                 Calendar.class,
@@ -84,28 +81,20 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         if (!enabled) return;
                         long time = (long) param.args[0];
-
-                        // 检查 ThreadLocal 标记
                         Boolean alreadySpoofed = spoofedByCurrentTimeMillis.get();
                         spoofedByCurrentTimeMillis.remove();
-
                         if (!Boolean.TRUE.equals(alreadySpoofed)) {
-                            // 时间来自真实来源（如 native 层、网络），施加偏移
                             param.args[0] = time + timeOffsetMillis;
                         }
-                        // else: 时间已被 Hook1 伪装，直接使用
                     }
                 }
             );
-            XposedBridge.log("[DateSpoof] ✓ Hook2 Calendar.setTimeInMillis(long) — 已安装");
+            XposedBridge.log("[DateSpoof] ✓ Hook2 Calendar.setTimeInMillis() — 已安装");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Hook2 Calendar.setTimeInMillis(long) — 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] ✗ Hook2 失败: " + t.getMessage());
         }
 
-        // ━━━ Hook 3：java.util.Date(long) 构造器 ━━━
-        // 处理直接 new Date() 和 new Date(millis) 的场景。
-        // Date() → 内部调 Date(System.currentTimeMillis()) → 走此构造器。
-        // 同样使用 ThreadLocal 防双倍偏移。
+        // ====== Hook 3: Date(long) 构造器 ======
         try {
             XposedHelpers.findAndHookConstructor(
                 Date.class,
@@ -115,10 +104,8 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         if (!enabled) return;
                         long time = (long) param.args[0];
-
                         Boolean alreadySpoofed = spoofedByCurrentTimeMillis.get();
                         spoofedByCurrentTimeMillis.remove();
-
                         if (!Boolean.TRUE.equals(alreadySpoofed)) {
                             param.args[0] = time + timeOffsetMillis;
                         }
@@ -127,14 +114,15 @@ public class HookMain implements IXposedHookLoadPackage {
             );
             XposedBridge.log("[DateSpoof] ✓ Hook3 Date(long) — 已安装");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Hook3 Date(long) — 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] ✗ Hook3 失败: " + t.getMessage());
         }
 
         XposedBridge.log("[DateSpoof] ====== Hook 安装完毕 (共 3 个) ======");
     }
 
     /**
-     * 配置加载 —— 此时 Hook 尚未安装，Calendar / System.currentTimeMillis() 返回真实值。
+     * 从 /sdcard/DateSpoof/config.json 读取配置（JSON 格式）。
+     * 不再依赖 SharedPreferences，彻底绕过跨进程权限问题。
      */
     private static void ensureConfig() {
         if (configLoaded) return;
@@ -142,47 +130,51 @@ public class HookMain implements IXposedHookLoadPackage {
         synchronized (CONFIG_LOCK) {
             if (configLoaded) return;
 
+            File configFile = new File(CONFIG_PATH);
+            XposedBridge.log("[DateSpoof] 检查配置文件: " + CONFIG_PATH);
+            XposedBridge.log("[DateSpoof]   文件存在: " + configFile.exists());
+
+            if (!configFile.exists()) {
+                XposedBridge.log("[DateSpoof] ⚠ 配置文件不存在！请打开 DateSpoof App → 设置 → 保存设置");
+                enabled = false;
+                configLoaded = true;
+                return;
+            }
+
             try {
-                XSharedPreferences prefs = new XSharedPreferences(MODULE_PACKAGE, PREFS_FILE);
-                prefs.reload();
+                StringBuilder sb = new StringBuilder();
+                BufferedReader reader = new BufferedReader(new FileReader(configFile));
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                reader.close();
 
-                // ── 诊断：打印所有读到的原始值 ──
-                String rawYear  = prefs.getString("year",  "★未找到★");
-                String rawMonth = prefs.getString("month", "★未找到★");
-                String rawDay   = prefs.getString("day",   "★未找到★");
-                boolean rawEnabled = prefs.getBoolean("enabled", true);
-                XposedBridge.log("[DateSpoof] 诊断 raw: enabled=" + rawEnabled
-                        + " year=" + rawYear + " month=" + rawMonth + " day=" + rawDay);
+                JSONObject json = new JSONObject(sb.toString());
 
-                enabled = rawEnabled;
+                enabled = json.optBoolean("enabled", true);
+                int year  = json.optInt("year", 2025);
+                int month = json.optInt("month", 1);
+                int day   = json.optInt("day", 1);
+
+                XposedBridge.log("[DateSpoof] JSON读取成功: enabled=" + enabled
+                        + " year=" + year + " month=" + month + " day=" + day);
 
                 if (enabled) {
-                    // 如果读取值为占位符（pref 文件不存在或无此 key），使用默认值
-                    if ("★未找到★".equals(rawYear) || "★未找到★".equals(rawMonth) || "★未找到★".equals(rawDay)) {
-                        XposedBridge.log("[DateSpoof] ⚠ pref 文件缺少 key，使用默认值 2025-1-1。请先打开 DateSpoof 设置界面并点击「保存设置」！");
-                        rawYear  = "2025";
-                        rawMonth = "1";
-                        rawDay   = "1";
-                    }
-                    int year  = Integer.parseInt(rawYear);
-                    int month = Integer.parseInt(rawMonth);
-                    int day   = Integer.parseInt(rawDay);
-
                     Calendar targetCal = Calendar.getInstance();
                     targetCal.set(year, month - 1, day, 0, 0, 0);
                     targetCal.set(Calendar.MILLISECOND, 0);
                     long targetMillis = targetCal.getTimeInMillis();
-
                     long realMillis = System.currentTimeMillis();
                     timeOffsetMillis = targetMillis - realMillis;
 
-                    XposedBridge.log("[DateSpoof] 配置: 目标日期 " + year + "-" + month + "-" + day
+                    XposedBridge.log("[DateSpoof] 配置生效: " + year + "-" + month + "-" + day
                             + "  偏移 " + timeOffsetMillis + " ms ("
                             + (timeOffsetMillis / 86400000) + " 天)");
                 }
             } catch (Throwable t) {
-                XposedBridge.log("[DateSpoof] ✗ 配置加载异常: " + t.getClass().getSimpleName() + " — " + t.getMessage());
-                XposedBridge.log("[DateSpoof]    可能原因: 1) 设置 App 尚未首次打开保存 2) pref 文件权限问题 3) 日期值非法");
+                XposedBridge.log("[DateSpoof] ✗ 读JSON异常: " + t.getClass().getSimpleName()
+                        + " — " + t.getMessage());
                 enabled = false;
             }
 
