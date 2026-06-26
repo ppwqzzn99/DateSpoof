@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory android:title="@string/pref_category_general">
+
+        <SwitchPreferenceCompat
+            android:key="enabled"
+            android:title="@string/pref_enabled_title"
+            android:summaryOn="@string/pref_enabled_summary_on"
+            android:summaryOff="@string/pref_enabled_summary_off"
+            android:defaultValue="true" />
+
+        <EditTextPreference
+            android:key="year"
+            android:title="@string/pref_year_title"
+            android:defaultValue="2025"
+            android:inputType="number" />
+
+        <EditTextPreference
+            android:key="month"
+            android:title="@string/pref_month_title"
+            android:defaultValue="1"
+            android:inputType="number" />
+
+        <EditTextPreference
+            android:key="day"
+            android:title="@string/pref_day_title"
+            android:defaultValue="1"
+            android:inputType="number" />
+
+    </PreferenceCategory>
+
+</PreferenceScreen>
