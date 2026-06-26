@@ -18,8 +18,12 @@ public class HookMain implements IXposedHookLoadPackage {
 
     private static final String TARGET_PACKAGE = "com.zyyad.game";
 
-    // 配置文件路径（/sdcard/ 下，设置 App 和目标 App 都能访问）
-    private static final String CONFIG_PATH = "/sdcard/DateSpoof/config.json";
+    // ä¸»éç½®ï¼/data/local/tmp/ â Android å¨å±å¯è¯»åï¼ä¸å Scoped Storage éå¶
+    private static final String CONFIG_DIR_PRIMARY = "/data/local/tmp/DateSpoof";
+    private static final String CONFIG_PATH_PRIMARY = "/data/local/tmp/DateSpoof/config.json";
+
+    // åéï¼/sdcard/DateSpoof/config.jsonï¼é¨åè®¾å¤å¯è½å¯ç¨ï¼
+    private static final String CONFIG_PATH_FALLBACK = "/sdcard/DateSpoof/config.json";
 
     private static volatile boolean configLoaded = false;
     private static volatile boolean enabled = false;
@@ -27,7 +31,7 @@ public class HookMain implements IXposedHookLoadPackage {
 
     private static final Object CONFIG_LOCK = new Object();
 
-    // 防重入标记
+    // é²éå¥æ è®°
     private static final ThreadLocal<Boolean> spoofedByCurrentTimeMillis = new ThreadLocal<>();
 
     @Override
@@ -36,19 +40,18 @@ public class HookMain implements IXposedHookLoadPackage {
             return;
         }
 
-        XposedBridge.log("[DateSpoof] ====== 模块已加载 ======");
-        XposedBridge.log("[DateSpoof] 目标包名: " + lpparam.packageName);
-        XposedBridge.log("[DateSpoof] 配置路径: " + CONFIG_PATH);
+        XposedBridge.log("[DateSpoof] ====== æ¨¡åå·²å è½½ ======");
+        XposedBridge.log("[DateSpoof] ç®æ åå: " + lpparam.packageName);
 
         ensureConfig();
 
         if (!enabled) {
-            XposedBridge.log("[DateSpoof] 模块未启用，跳过所有 Hook");
+            XposedBridge.log("[DateSpoof] æ¨¡åæªå¯ç¨ï¼è·³è¿ææ Hook");
             return;
         }
 
-        XposedBridge.log("[DateSpoof] 配置: 偏移=" + timeOffsetMillis + " ms ("
-                + (timeOffsetMillis / 86400000) + " 天)");
+        XposedBridge.log("[DateSpoof] éç½®: åç§»=" + timeOffsetMillis + " ms ("
+                + (timeOffsetMillis / 86400000) + " å¤©)");
 
         // ====== Hook 1: System.currentTimeMillis() ======
         try {
@@ -65,9 +68,9 @@ public class HookMain implements IXposedHookLoadPackage {
                     }
                 }
             );
-            XposedBridge.log("[DateSpoof] ✓ Hook1 System.currentTimeMillis() — 已安装");
+            XposedBridge.log("[DateSpoof] â Hook1 System.currentTimeMillis() â å·²å®è£");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Hook1 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] â Hook1 å¤±è´¥: " + t.getMessage());
         }
 
         // ====== Hook 2: Calendar.setTimeInMillis(long) ======
@@ -89,12 +92,12 @@ public class HookMain implements IXposedHookLoadPackage {
                     }
                 }
             );
-            XposedBridge.log("[DateSpoof] ✓ Hook2 Calendar.setTimeInMillis() — 已安装");
+            XposedBridge.log("[DateSpoof] â Hook2 Calendar.setTimeInMillis() â å·²å®è£");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Hook2 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] â Hook2 å¤±è´¥: " + t.getMessage());
         }
 
-        // ====== Hook 3: Date(long) 构造器 ======
+        // ====== Hook 3: Date(long) æé å¨ ======
         try {
             XposedHelpers.findAndHookConstructor(
                 Date.class,
@@ -112,17 +115,18 @@ public class HookMain implements IXposedHookLoadPackage {
                     }
                 }
             );
-            XposedBridge.log("[DateSpoof] ✓ Hook3 Date(long) — 已安装");
+            XposedBridge.log("[DateSpoof] â Hook3 Date(long) â å·²å®è£");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Hook3 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] â Hook3 å¤±è´¥: " + t.getMessage());
         }
 
-        XposedBridge.log("[DateSpoof] ====== Hook 安装完毕 (共 3 个) ======");
+        XposedBridge.log("[DateSpoof] ====== Hook å®è£å®æ¯ (å± 3 ä¸ª) ======");
     }
 
     /**
-     * 从 /sdcard/DateSpoof/config.json 读取配置（JSON 格式）。
-     * 不再依赖 SharedPreferences，彻底绕过跨进程权限问题。
+     * ä»éç½®æä»¶è¯»å JSON éç½®ã
+     * ä¼åè¯» /data/local/tmp/DateSpoof/config.jsonï¼å¨å±å¯è®¿é®ï¼ã
+     * åéè¯» /sdcard/DateSpoof/config.jsonã
      */
     private static void ensureConfig() {
         if (configLoaded) return;
@@ -130,12 +134,43 @@ public class HookMain implements IXposedHookLoadPackage {
         synchronized (CONFIG_LOCK) {
             if (configLoaded) return;
 
-            File configFile = new File(CONFIG_PATH);
-            XposedBridge.log("[DateSpoof] 检查配置文件: " + CONFIG_PATH);
-            XposedBridge.log("[DateSpoof]   文件存在: " + configFile.exists());
+            // å°è¯ä¸»è·¯å¾
+            File configFile = new File(CONFIG_PATH_PRIMARY);
+            boolean primaryOk = configFile.exists() && configFile.canRead();
+
+            XposedBridge.log("[DateSpoof] å°è¯ä¸»è·¯å¾: " + CONFIG_PATH_PRIMARY);
+            XposedBridge.log("[DateSpoof]   å­å¨=" + configFile.exists() + " å¯è¯»=" + configFile.canRead());
+
+            // ä¸»è·¯å¾ä¸è¡ï¼å°è¯åé
+            if (!primaryOk) {
+                configFile = new File(CONFIG_PATH_FALLBACK);
+                XposedBridge.log("[DateSpoof] åéè·¯å¾: " + CONFIG_PATH_FALLBACK);
+                XposedBridge.log("[DateSpoof]   å­å¨=" + configFile.exists() + " å¯è¯»=" + configFile.canRead());
+
+                // å°è¯ chmod ä¿®å¤æé
+                if (configFile.exists() && !configFile.canRead()) {
+                    try {
+                        configFile.setReadable(true, false);
+                        XposedBridge.log("[DateSpoof]   å·²å°è¯ setReadable(true, false), ç°å¨å¯è¯»=" + configFile.canRead());
+                    } catch (Exception e) {
+                        XposedBridge.log("[DateSpoof]   setReadable å¤±è´¥: " + e.getMessage());
+                    }
+                }
+            }
 
             if (!configFile.exists()) {
-                XposedBridge.log("[DateSpoof] ⚠ 配置文件不存在！请打开 DateSpoof App → 设置 → 保存设置");
+                XposedBridge.log("[DateSpoof] â  éç½®æä»¶ä¸å­å¨ï¼");
+                XposedBridge.log("[DateSpoof]   è¯·æå¼ DateSpoof App â è®¾ç½® â ä¿å­è®¾ç½®");
+                XposedBridge.log("[DateSpoof]   é¢æè·¯å¾: " + CONFIG_PATH_PRIMARY);
+                enabled = false;
+                configLoaded = true;
+                return;
+            }
+
+            if (!configFile.canRead()) {
+                XposedBridge.log("[DateSpoof] â  éç½®æä»¶å­å¨ä½æ è¯»åæé (EACCES)");
+                XposedBridge.log("[DateSpoof]   è·¯å¾: " + configFile.getAbsolutePath());
+                XposedBridge.log("[DateSpoof]   è¯·å¨ DateSpoof App ä¸­éæ°ä¿å­è®¾ç½®");
                 enabled = false;
                 configLoaded = true;
                 return;
@@ -157,7 +192,7 @@ public class HookMain implements IXposedHookLoadPackage {
                 int month = json.optInt("month", 1);
                 int day   = json.optInt("day", 1);
 
-                XposedBridge.log("[DateSpoof] JSON读取成功: enabled=" + enabled
+                XposedBridge.log("[DateSpoof] JSONè¯»åæå: enabled=" + enabled
                         + " year=" + year + " month=" + month + " day=" + day);
 
                 if (enabled) {
@@ -168,13 +203,13 @@ public class HookMain implements IXposedHookLoadPackage {
                     long realMillis = System.currentTimeMillis();
                     timeOffsetMillis = targetMillis - realMillis;
 
-                    XposedBridge.log("[DateSpoof] 配置生效: " + year + "-" + month + "-" + day
-                            + "  偏移 " + timeOffsetMillis + " ms ("
-                            + (timeOffsetMillis / 86400000) + " 天)");
+                    XposedBridge.log("[DateSpoof] â éç½®çæ: " + year + "-" + month + "-" + day
+                            + "  åç§» " + timeOffsetMillis + " ms ("
+                            + (timeOffsetMillis / 86400000) + " å¤©)");
                 }
             } catch (Throwable t) {
-                XposedBridge.log("[DateSpoof] ✗ 读JSON异常: " + t.getClass().getSimpleName()
-                        + " — " + t.getMessage());
+                XposedBridge.log("[DateSpoof] â è¯»JSONå¼å¸¸: " + t.getClass().getSimpleName()
+                        + " â " + t.getMessage());
                 enabled = false;
             }
 

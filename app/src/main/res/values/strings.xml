@@ -1,17 +1,17 @@
 <resources>
     <string name="app_name">DateSpoof</string>
-    <string name="xposed_description">伪装手机日期信息，目标应用：com.zyyad.game</string>
+    <string name="xposed_description">ä¼ªè£ææºæ¥æä¿¡æ¯ï¼ç®æ åºç¨ï¼com.zyyad.game</string>
 
     <string-array name="xposed_scope">
         <item>com.zyyad.game</item>
     </string-array>
 
     <!-- Settings -->
-    <string name="pref_category_general">伪装设置</string>
-    <string name="pref_enabled_title">启用日期伪装</string>
-    <string name="pref_enabled_summary_on">日期伪装已开启</string>
-    <string name="pref_enabled_summary_off">日期伪装已关闭</string>
-    <string name="pref_year_title">伪装年份</string>
-    <string name="pref_month_title">伪装月份</string>
-    <string name="pref_day_title">伪装日期</string>
+    <string name="pref_category_general">ä¼ªè£è®¾ç½®</string>
+    <string name="pref_enabled_title">å¯ç¨æ¥æä¼ªè£</string>
+    <string name="pref_enabled_summary_on">æ¥æä¼ªè£å·²å¼å¯</string>
+    <string name="pref_enabled_summary_off">æ¥æä¼ªè£å·²å³é­</string>
+    <string name="pref_year_title">ä¼ªè£å¹´ä»½</string>
+    <string name="pref_month_title">ä¼ªè£æä»½</string>
+    <string name="pref_day_title">ä¼ªè£æ¥æ</string>
 </resources>

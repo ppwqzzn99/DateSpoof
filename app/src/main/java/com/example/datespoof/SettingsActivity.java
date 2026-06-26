@@ -26,8 +26,14 @@ import java.util.Calendar;
 
 public class SettingsActivity extends AppCompatActivity {
 
-    private static final String CONFIG_DIR  = "/sdcard/DateSpoof";
-    private static final String CONFIG_PATH = "/sdcard/DateSpoof/config.json";
+    // ä¸»è·¯å¾ï¼/data/local/tmp/ â Android ææè¿ç¨å¯è¯»åï¼Scoped Storage ç®¡ä¸å°
+    private static final String CONFIG_DIR_PRIMARY = "/data/local/tmp/DateSpoof";
+    private static final String CONFIG_PATH_PRIMARY = "/data/local/tmp/DateSpoof/config.json";
+
+    // è¾å©è·¯å¾ï¼/sdcard/ â æ¹ä¾¿ç¨æ·ç¨æä»¶ç®¡çå¨æ¥ç
+    private static final String CONFIG_DIR_SDCARD  = "/sdcard/DateSpoof";
+    private static final String CONFIG_PATH_SDCARD  = "/sdcard/DateSpoof/config.json";
+
     private static final int REQ_STORAGE = 1001;
 
     private Switch swEnabled;
@@ -48,31 +54,20 @@ public class SettingsActivity extends AppCompatActivity {
         btnSave  = findViewById(R.id.btn_save);
         btnVerify = findViewById(R.id.btn_verify);
 
-        // 请求存储权限（Android 11+ 需要 MANAGE_EXTERNAL_STORAGE）
         requestStoragePerms();
-
-        // 创建配置目录
-        ensureConfigDir();
-
-        // 加载已有配置
+        ensureConfigDirs();
         loadConfig();
 
-        // 保存按钮
         btnSave.setOnClickListener(v -> saveConfig());
-
-        // 验证按钮
         btnVerify.setOnClickListener(v -> verifyConfig());
 
-        // 自动验证
         verifyConfig();
     }
 
     private void requestStoragePerms() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Android 11+
             if (!Environment.isExternalStorageManager()) {
-                Toast.makeText(this, "请授予「所有文件管理权限」后使用", Toast.LENGTH_LONG).show();
-                // 引导到设置页
+                Toast.makeText(this, "è¯·æäºãæææä»¶ç®¡çæéãåä½¿ç¨", Toast.LENGTH_LONG).show();
                 try {
                     startActivity(new android.content.Intent(
                         android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -81,7 +76,6 @@ public class SettingsActivity extends AppCompatActivity {
                 } catch (Exception ignored) {}
             }
         } else {
-            // Android 10 及以下
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                     != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this,
@@ -93,18 +87,27 @@ public class SettingsActivity extends AppCompatActivity {
         }
     }
 
-    private void ensureConfigDir() {
-        File dir = new File(CONFIG_DIR);
+    private void ensureConfigDir(File dir) {
         if (!dir.exists()) {
             boolean ok = dir.mkdirs();
-            Toast.makeText(this, ok ? "配置目录已创建" : "创建目录失败", Toast.LENGTH_SHORT).show();
+            if (ok) {
+                dir.setExecutable(true, false);
+            }
         }
     }
 
+    private void ensureConfigDirs() {
+        ensureConfigDir(new File(CONFIG_DIR_PRIMARY));
+        ensureConfigDir(new File(CONFIG_DIR_SDCARD));
+    }
+
     private void loadConfig() {
-        File file = new File(CONFIG_PATH);
+        // ä¼åä»ä¸»è·¯å¾è¯»
+        File file = new File(CONFIG_PATH_PRIMARY);
         if (!file.exists()) {
-            // 文件不存在，使用默认值
+            file = new File(CONFIG_PATH_SDCARD);
+        }
+        if (!file.exists()) {
             swEnabled.setChecked(true);
             etYear.setText("2025");
             etMonth.setText("1");
@@ -112,19 +115,13 @@ public class SettingsActivity extends AppCompatActivity {
             return;
         }
         try {
-            BufferedReader reader = new BufferedReader(new FileReader(file));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            JSONObject json = new JSONObject(sb.toString());
+            JSONObject json = new JSONObject(readFileContent(file));
             swEnabled.setChecked(json.optBoolean("enabled", true));
             etYear.setText( String.valueOf(json.optInt("year", 2025)));
             etMonth.setText(String.valueOf(json.optInt("month", 1)));
             etDay.setText(  String.valueOf(json.optInt("day", 1)));
         } catch (Exception e) {
-            Toast.makeText(this, "读取配置失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "è¯»åéç½®å¤±è´¥: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -134,7 +131,7 @@ public class SettingsActivity extends AppCompatActivity {
         String dayStr   = etDay.getText().toString().trim();
 
         if (yearStr.isEmpty() || monthStr.isEmpty() || dayStr.isEmpty()) {
-            Toast.makeText(this, "年/月/日不能为空", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "å¹´/æ/æ¥ä¸è½ä¸ºç©º", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -144,90 +141,125 @@ public class SettingsActivity extends AppCompatActivity {
             month = Integer.parseInt(monthStr);
             day   = Integer.parseInt(dayStr);
         } catch (NumberFormatException e) {
-            Toast.makeText(this, "请输入有效数字", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "è¯·è¾å¥æææ°å­", Toast.LENGTH_SHORT).show();
             return;
         }
 
         if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) {
-            Toast.makeText(this, "日期范围不合法", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "æ¥æèå´ä¸åæ³", Toast.LENGTH_SHORT).show();
             return;
         }
 
         boolean enabled = swEnabled.isChecked();
 
         try {
-            ensureConfigDir();
+            ensureConfigDirs();
 
             JSONObject json = new JSONObject();
             json.put("enabled", enabled);
             json.put("year", year);
             json.put("month", month);
             json.put("day", day);
+            String jsonStr = json.toString(2);
 
-            FileWriter writer = new FileWriter(CONFIG_PATH);
-            writer.write(json.toString(2));
-            writer.close();
+            // ====== åå¥ä¸»è·¯å¾ ======
+            FileWriter writer1 = new FileWriter(CONFIG_PATH_PRIMARY);
+            writer1.write(jsonStr);
+            writer1.close();
+            fixPermissions(CONFIG_PATH_PRIMARY);
 
-            // 确认写入
+            // ====== åå¥ /sdcard/ å¯æ¬ ======
+            FileWriter writer2 = new FileWriter(CONFIG_PATH_SDCARD);
+            writer2.write(jsonStr);
+            writer2.close();
+            fixPermissions(CONFIG_PATH_SDCARD);
+
+            // ç¡®è®¤åå¥
             Calendar targetCal = Calendar.getInstance();
             targetCal.set(year, month - 1, day, 0, 0, 0);
             targetCal.set(Calendar.MILLISECOND, 0);
             long offsetDays = (targetCal.getTimeInMillis() - System.currentTimeMillis()) / 86400000;
 
-            String msg = "✓ 配置已保存到:\n" + CONFIG_PATH
-                    + "\n\n目标: " + year + "年" + month + "月" + day + "日"
-                    + "\n偏移: " + offsetDays + " 天"
-                    + "\n状态: " + (enabled ? "已启用" : "已禁用")
-                    + "\n\n⚠ 请在 LSPosed 中重新勾选目标应用后重启！";
+            String msg = "â éç½®å·²ä¿å­!\n\n"
+                    + "ç®æ : " + year + "å¹´" + month + "æ" + day + "æ¥\n"
+                    + "åç§»: " + offsetDays + " å¤©\n"
+                    + "ç¶æ: " + (enabled ? "å·²å¯ç¨" : "å·²ç¦ç¨") + "\n\n"
+                    + "ä¸»è·¯å¾: " + CONFIG_PATH_PRIMARY + "\n"
+                    + "å¯è·¯å¾: " + CONFIG_PATH_SDCARD + "\n\n"
+                    + "â  è¯·å¨ LSPosed ä¸­éæ°å¾éç®æ åºç¨å¹¶éå¯ï¼";
             Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
 
         } catch (Exception e) {
-            Toast.makeText(this, "写入失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "åå¥å¤±è´¥: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
 
         verifyConfig();
     }
 
+    /**
+     * ä¿®å¤æä»¶æéä½¿å¶å¨å±å¯è¯»ï¼
+     * 1. Java setReadable(true, false)
+     * 2. Runtime chmod 666 (ååº)
+     */
+    private void fixPermissions(String path) {
+        try {
+            File f = new File(path);
+            f.setReadable(true, false);
+            f.setWritable(true, true);  // ä» owner å¯å
+        } catch (Exception ignored) {}
+        try {
+            Runtime.getRuntime().exec(new String[]{"chmod", "666", path});
+        } catch (Exception ignored) {}
+    }
+
     private void verifyConfig() {
-        File file = new File(CONFIG_PATH);
         StringBuilder sb = new StringBuilder();
 
-        sb.append("── 配置文件 ──\n");
-        sb.append("路径: ").append(CONFIG_PATH).append("\n");
-        sb.append("存在: ").append(file.exists() ? "是" : "否").append("\n");
-        if (file.exists()) {
-            sb.append("大小: ").append(file.length()).append(" 字节\n");
-        }
-        sb.append("\n── 文件内容 ──\n");
+        // ä¸»è·¯å¾éªè¯
+        File filePrimary = new File(CONFIG_PATH_PRIMARY);
+        sb.append("ââ ä¸»è·¯å¾ ââ\n");
+        sb.append(CONFIG_PATH_PRIMARY).append("\n");
+        sb.append("å­å¨: ").append(filePrimary.exists() ? "â" : "â").append("\n");
+        sb.append("å¤§å°: ").append(filePrimary.exists() ? filePrimary.length() + " å­è" : "â").append("\n");
+        sb.append("å¯è¯»: ").append(filePrimary.canRead() ? "â" : "â").append("\n\n");
 
-        if (!file.exists()) {
-            sb.append("(文件不存在 — 请先点击「保存设置」)");
+        // å¯è·¯å¾éªè¯
+        File fileSdcard = new File(CONFIG_PATH_SDCARD);
+        sb.append("ââ å¯è·¯å¾ ââ\n");
+        sb.append(CONFIG_PATH_SDCARD).append("\n");
+        sb.append("å­å¨: ").append(fileSdcard.exists() ? "â" : "â").append("\n");
+        sb.append("å¤§å°: ").append(fileSdcard.exists() ? fileSdcard.length() + " å­è" : "â").append("\n");
+        sb.append("å¯è¯»: ").append(fileSdcard.canRead() ? "â" : "â").append("\n\n");
+
+        // æä»¶åå®¹
+        File readFrom = filePrimary.exists() ? filePrimary : (fileSdcard.exists() ? fileSdcard : null);
+        if (readFrom == null) {
+            sb.append("ââ æä»¶åå®¹ ââ\n");
+            sb.append("(éç½®æä»¶ä¸å­å¨ â è¯·åç¹å»ãä¿å­è®¾ç½®ã)\n");
+            sb.append("(é¦æ¬¡ä½¿ç¨éææå­å¨æé)");
         } else {
             try {
-                BufferedReader reader = new BufferedReader(new FileReader(file));
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line).append("\n");
-                }
-                reader.close();
+                String content = readFileContent(readFrom);
+                JSONObject json = new JSONObject(content);
 
-                // 解析并注解
-                sb.append("\n── 解析结果 ──\n");
-                JSONObject json = new JSONObject(readFileContent(file));
+                sb.append("ââ æä»¶åå®¹ ââ\n");
+                sb.append(content).append("\n\n");
+
+                sb.append("ââ è§£æç»æ ââ\n");
                 sb.append("enabled = ").append(json.optBoolean("enabled")).append("\n");
                 sb.append("year    = ").append(json.optInt("year")).append("\n");
                 sb.append("month   = ").append(json.optInt("month")).append("\n");
                 sb.append("day     = ").append(json.optInt("day")).append("\n");
 
-                // 计算偏移
                 Calendar c = Calendar.getInstance();
                 c.set(json.optInt("year"), json.optInt("month") - 1, json.optInt("day"), 0, 0, 0);
                 c.set(Calendar.MILLISECOND, 0);
                 long d = (c.getTimeInMillis() - System.currentTimeMillis()) / 86400000;
-                sb.append("偏移    = ").append(d).append(" 天");
+                sb.append("åç§»    = ").append(d).append(" å¤©");
 
             } catch (Exception e) {
-                sb.append("(读取异常: ").append(e.getMessage()).append(")");
+                sb.append("ââ è¯»åå¼å¸¸ ââ\n");
+                sb.append(e.getClass().getSimpleName()).append(": ").append(e.getMessage());
             }
         }
 
@@ -238,9 +270,9 @@ public class SettingsActivity extends AppCompatActivity {
         BufferedReader reader = new BufferedReader(new FileReader(file));
         StringBuilder sb = new StringBuilder();
         String line;
-        while ((line = reader.readLine()) != null) sb.append(line);
+        while ((line = reader.readLine()) != null) sb.append(line).append("\n");
         reader.close();
-        return sb.toString();
+        return sb.toString().trim();
     }
 
     @Override
@@ -252,7 +284,7 @@ public class SettingsActivity extends AppCompatActivity {
             for (int r : grantResults) {
                 if (r != PackageManager.PERMISSION_GRANTED) granted = false;
             }
-            Toast.makeText(this, granted ? "存储权限已授权" : "存储权限被拒绝，可能无法保存配置",
+            Toast.makeText(this, granted ? "å­å¨æéå·²ææ" : "å­å¨æéè¢«æç»ï¼å¯è½æ æ³ä¿å­éç½®",
                 Toast.LENGTH_SHORT).show();
         }
     }
