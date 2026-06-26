@@ -22,27 +22,34 @@ public class HookMain implements IXposedHookLoadPackage {
 
     private static final Object CONFIG_LOCK = new Object();
 
+    // ====== ThreadLocal 防重入标记 ======
+    // 标记本线程刚才是否从 currentTimeMillis() 拿过伪装值，
+    // 如果拿了，setTimeInMillis/Date(long) 就不应再加偏移
+    private static final ThreadLocal<Boolean> spoofedByCurrentTimeMillis = new ThreadLocal<>();
+
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
             return;
         }
 
-        XposedBridge.log("[DateSpoof] 目标应用加载: " + lpparam.packageName);
+        XposedBridge.log("[DateSpoof] ====== 模块已加载 ======");
+        XposedBridge.log("[DateSpoof] 目标包名: " + lpparam.packageName);
+        XposedBridge.log("[DateSpoof] 进程名:   " + lpparam.processName);
 
         ensureConfig();
 
         if (!enabled) {
-            XposedBridge.log("[DateSpoof] 模块未启用，跳过 Hook");
+            XposedBridge.log("[DateSpoof] 模块未启用，跳过所有 Hook");
             return;
         }
 
-        XposedBridge.log("[DateSpoof] 偏移量: " + timeOffsetMillis + " ms");
+        XposedBridge.log("[DateSpoof] 配置: 偏移=" + timeOffsetMillis + " ms ("
+                + (timeOffsetMillis / 86400000) + " 天)");
 
-        // ── Hook 1：System.currentTimeMillis() ──
-        // Java 层所有时间 API（Date、Calendar、SimpleDateFormat 等）
-        // 最终都调用这个方法。Hook 它一个就够了。
-        // afterHookedMethod 只读原始结果再写回，不触发递归。
+        // ━━━ Hook 1：System.currentTimeMillis() ━━━
+        // native 方法，在某些 Android 版本上 LSPosed 可能无法 Hook。
+        // 如果成功 Hook，会设置 ThreadLocal 标记辅助后续 Hook 避免双倍偏移。
         try {
             XposedHelpers.findAndHookMethod(
                 java.lang.System.class,
@@ -52,18 +59,53 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         if (!enabled) return;
                         long original = (long) param.getResult();
-                        param.setResult(original + timeOffsetMillis);
+                        long spoofed = original + timeOffsetMillis;
+                        param.setResult(spoofed);
+                        // 标记：这个线程刚才拿了伪装时间
+                        spoofedByCurrentTimeMillis.set(true);
                     }
                 }
             );
-            XposedBridge.log("[DateSpoof] ✓ System.currentTimeMillis()");
+            XposedBridge.log("[DateSpoof] ✓ Hook1 System.currentTimeMillis() — 已安装");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ System.currentTimeMillis() 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] ✗ Hook1 System.currentTimeMillis() — 安装失败: " + t.getMessage());
         }
 
-        // ── Hook 2：Date(long) 构造器 ──
-        // 兜底场景：应用从 native 层或网络拿到真实时间戳后直接 new Date(millis)。
-        // 无参 Date() 内部走 currentTimeMillis()，已被 Hook 1 覆盖。
+        // ━━━ Hook 2：Calendar.setTimeInMillis(long) ━━━
+        // 主力 Hook。Calendar 内部存储时间必走这个方法。
+        // 如果 ThreadLocal 标记已被设置（当前毫秒值来自 Hook1），不再加偏移。
+        try {
+            XposedHelpers.findAndHookMethod(
+                Calendar.class,
+                "setTimeInMillis",
+                long.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        if (!enabled) return;
+                        long time = (long) param.args[0];
+
+                        // 检查 ThreadLocal 标记
+                        Boolean alreadySpoofed = spoofedByCurrentTimeMillis.get();
+                        spoofedByCurrentTimeMillis.remove();
+
+                        if (!Boolean.TRUE.equals(alreadySpoofed)) {
+                            // 时间来自真实来源（如 native 层、网络），施加偏移
+                            param.args[0] = time + timeOffsetMillis;
+                        }
+                        // else: 时间已被 Hook1 伪装，直接使用
+                    }
+                }
+            );
+            XposedBridge.log("[DateSpoof] ✓ Hook2 Calendar.setTimeInMillis(long) — 已安装");
+        } catch (Throwable t) {
+            XposedBridge.log("[DateSpoof] ✗ Hook2 Calendar.setTimeInMillis(long) — 失败: " + t.getMessage());
+        }
+
+        // ━━━ Hook 3：java.util.Date(long) 构造器 ━━━
+        // 处理直接 new Date() 和 new Date(millis) 的场景。
+        // Date() → 内部调 Date(System.currentTimeMillis()) → 走此构造器。
+        // 同样使用 ThreadLocal 防双倍偏移。
         try {
             XposedHelpers.findAndHookConstructor(
                 Date.class,
@@ -73,21 +115,26 @@ public class HookMain implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         if (!enabled) return;
                         long time = (long) param.args[0];
-                        param.args[0] = time + timeOffsetMillis;
+
+                        Boolean alreadySpoofed = spoofedByCurrentTimeMillis.get();
+                        spoofedByCurrentTimeMillis.remove();
+
+                        if (!Boolean.TRUE.equals(alreadySpoofed)) {
+                            param.args[0] = time + timeOffsetMillis;
+                        }
                     }
                 }
             );
-            XposedBridge.log("[DateSpoof] ✓ Date(long)");
+            XposedBridge.log("[DateSpoof] ✓ Hook3 Date(long) — 已安装");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Date(long) 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] ✗ Hook3 Date(long) — 失败: " + t.getMessage());
         }
 
-        XposedBridge.log("[DateSpoof] 全部 Hook 安装完毕 (共 2 个)");
+        XposedBridge.log("[DateSpoof] ====== Hook 安装完毕 (共 3 个) ======");
     }
 
     /**
-     * 双重检查锁定加载配置。
-     * 此时 Hook 尚未安装，Calendar / System.currentTimeMillis() 返回真实值。
+     * 配置加载 —— 此时 Hook 尚未安装，Calendar / System.currentTimeMillis() 返回真实值。
      */
     private static void ensureConfig() {
         if (configLoaded) return;
@@ -112,14 +159,13 @@ public class HookMain implements IXposedHookLoadPackage {
                     long targetMillis = targetCal.getTimeInMillis();
 
                     long realMillis = System.currentTimeMillis();
-
                     timeOffsetMillis = targetMillis - realMillis;
 
-                    XposedBridge.log("[DateSpoof] 目标: " + year + "-" + month + "-" + day
-                            + "  偏移: " + timeOffsetMillis + " ms");
+                    XposedBridge.log("[DateSpoof] 配置: 目标日期 " + year + "-" + month + "-" + day
+                            + "  偏移 " + timeOffsetMillis + " ms");
                 }
             } catch (Throwable t) {
-                XposedBridge.log("[DateSpoof] 配置加载失败: " + t.getMessage());
+                XposedBridge.log("[DateSpoof] 配置加载异常: " + t.getMessage());
                 enabled = false;
             }
 
