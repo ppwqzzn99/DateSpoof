@@ -34,4 +34,5 @@ tasks.withType(JavaCompile).configureEach {
 
 dependencies {
     compileOnly project(':xposed-api')
+    implementation 'androidx.appcompat:appcompat:1.6.1'
 }
