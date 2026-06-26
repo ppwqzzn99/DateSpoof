@@ -57,9 +57,19 @@ public class HookMain implements IXposedHookLoadPackage {
         targetCal.set(Calendar.MILLISECOND, 0);
         timeOffsetMillis = targetCal.getTimeInMillis() - System.currentTimeMillis();
 
-        XposedBridge.log("[DateSpoof] 诊断模式: 目标 " + TARGET_YEAR + "-" + TARGET_MONTH + "-" + TARGET_DAY
+        XposedBridge.log("[DateSpoof] 目标 " + TARGET_YEAR + "-" + TARGET_MONTH + "-" + TARGET_DAY
                 + "  偏移 " + timeOffsetMillis + " ms (" + (timeOffsetMillis / 86400000) + " 天)");
-        XposedBridge.log("[DateSpoof] 正在安装所有时间 API hook...");
+
+        // ====== 0. Native 层 Hook：gettimeofday / clock_gettime / time ======
+        // 这才是关键 —— 游戏（尤其 Unity/IL2CPP）直接从 C 层调用 libc 时间函数
+        try {
+            NativeTimeHook.init(timeOffsetMillis);
+            XposedBridge.log("[DateSpoof] ✓ Native Hook 已初始化");
+        } catch (Throwable t) {
+            XposedBridge.log("[DateSpoof] ✗ Native Hook 失败: " + t.getMessage());
+        }
+
+        XposedBridge.log("[DateSpoof] 正在安装 Java 层 hook...");
 
         int ok = 0, fail = 0;
 
