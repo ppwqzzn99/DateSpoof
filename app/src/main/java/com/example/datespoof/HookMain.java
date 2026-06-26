@@ -149,9 +149,10 @@ public class HookMain implements IXposedHookLoadPackage {
                 enabled = prefs.getBoolean("enabled", true);
 
                 if (enabled) {
-                    int year = prefs.getInt("year", 2025);
-                    int month = prefs.getInt("month", 1);
-                    int day = prefs.getInt("day", 1);
+                    // ⚠️ EditTextPreference 始终存 String，不能用 getInt() —— 那是之前没生效的根因
+                    int year  = Integer.parseInt(prefs.getString("year",  "2025"));
+                    int month = Integer.parseInt(prefs.getString("month", "1"));
+                    int day   = Integer.parseInt(prefs.getString("day",   "1"));
 
                     Calendar targetCal = Calendar.getInstance();
                     targetCal.set(year, month - 1, day, 0, 0, 0);
@@ -162,7 +163,8 @@ public class HookMain implements IXposedHookLoadPackage {
                     timeOffsetMillis = targetMillis - realMillis;
 
                     XposedBridge.log("[DateSpoof] 配置: 目标日期 " + year + "-" + month + "-" + day
-                            + "  偏移 " + timeOffsetMillis + " ms");
+                            + "  偏移 " + timeOffsetMillis + " ms ("
+                            + (timeOffsetMillis / 86400000) + " 天)");
                 }
             } catch (Throwable t) {
                 XposedBridge.log("[DateSpoof] 配置加载异常: " + t.getMessage());
