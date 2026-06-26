@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <android/log.h>
 #include <jni.h>
+#include <stdint.h>
+#include <stddef.h>
 
 #define TAG "DateSpoof-Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -22,6 +24,7 @@ static int    (*orig_clock_gettime)(clockid_t, struct timespec *)       = NULL;
 static time_t (*orig_time)(time_t *)                                     = NULL;
 
 // ====== Replacement implementations ======
+// NOTE: -mbranch-protection=bti ensures each function starts with BTI C
 static int fake_gettimeofday(struct timeval *tv, struct timezone *tz) {
     int ret = orig_gettimeofday(tv, tz);
     if (tv) {
@@ -50,56 +53,75 @@ static time_t fake_time(time_t *t) {
     return r;
 }
 
-// ====== ARM64 inline hook: patch first 16 bytes ======
-// Hook shell:   LDR X17, #8  (0x58000071)  4 bytes
-//               BR X17       (0xD61F0220)  4 bytes
-//               target_addr                 8 bytes
-// Total: 16 bytes
-
-// Trampoline:   <original 16 bytes>
-//               LDR X17, #8  (0x58000071)  4 bytes
-//               BR X17       (0xD61F0220)  4 bytes
-//               return_addr                 8 bytes
-// Total: 32 bytes
+// ====== ARM64 inline hook ======
+//
+// Hook shell (16 bytes, written to target function entry):
+//   LDR X17, #8      0x58000071   loads target addr from literal pool
+//   BR  X17           0xD61F0220   indirect branch → needs BTI at target
+//   target_addr       8 bytes
+//
+// Trampoline (copies original entry, then jumps back):
+//   BTI C             0xD503245F   landing pad for BLR from fake_*
+//   <original 16 bytes>           copied from target
+//   B  <offset>                    direct branch back to target+16
+//
+// Key fix: use direct B (not BR) for trampoline return to avoid BTI violation
+// at target+16 which is mid-function and has no BTI landing pad.
 
 static int arm64_hook(void *target, void *replacement, void **trampoline_out) {
+    uint32_t *orig = (uint32_t *)target;
+
+    // --- Allocate trampoline (RWX) ---
     size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
-    void *tramp = mmap(NULL, 64, PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (tramp == MAP_FAILED) {
+    void *tramp_raw = mmap(NULL, page_size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tramp_raw == MAP_FAILED) {
         LOGE("mmap trampoline failed: %s", strerror(errno));
         return -1;
     }
 
-    uint32_t *orig = (uint32_t *)target;
-    uint32_t *code = (uint32_t *)tramp;
+    uint32_t *code = (uint32_t *)tramp_raw;
 
-    // Copy original 4 instructions to trampoline
-    memcpy(code, orig, 16);
+    // BTI C landing pad (safe NOP on non-BTI hardware)
+    code[0] = 0xD503245F;
 
-    // Append jump back: LDR X17, #8; BR X17; return_addr
-    code[4] = 0x58000071;
-    code[5] = 0xD61F0220;
-    ((uint64_t *)(code + 6))[0] = (uint64_t)(orig + 4);
+    // Copy original 4 instructions
+    memcpy(code + 1, orig, 16);
 
-    __builtin___clear_cache((char *)code, (char *)(code + 8));
+    // Direct B branch back to target+16 (instruction 5 of original function)
+    uintptr_t target_ret = (uintptr_t)orig + 16;         // where to return to
+    uintptr_t b_pc       = (uintptr_t)(code + 5);         // PC of the B instruction
+    ptrdiff_t  imm26     = (target_ret - b_pc) / 4;       // signed 26-bit offset
 
-    // Make target writable
-    uintptr_t page = (uintptr_t)target & ~(page_size - 1);
-    if (mprotect((void *)page, page_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-        LOGE("mprotect failed: %s", strerror(errno));
-        munmap(tramp, 64);
+    // Validate B range (±128 MB)
+    if (imm26 < -0x2000000LL || imm26 > 0x1FFFFFFLL) {
+        LOGE("B branch out of range (distance=%td bytes)", target_ret - b_pc);
+        munmap(tramp_raw, page_size);
         return -1;
     }
 
-    // Write hook shell
-    orig[0] = 0x58000071;
-    orig[1] = 0xD61F0220;
+    code[5] = 0x14000000 | (uint32_t)(imm26 & 0x03FFFFFF);
+
+    // Cache flush for trampoline
+    __builtin___clear_cache((char *)code, (char *)(code + 6));
+
+    // --- Make target page writable ---
+    uintptr_t page_addr = (uintptr_t)target & ~(page_size - 1);
+    if (mprotect((void *)page_addr, page_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+        LOGE("mprotect failed: %s", strerror(errno));
+        munmap(tramp_raw, page_size);
+        return -1;
+    }
+
+    // --- Write hook shell ---
+    orig[0] = 0x58000071;   // LDR X17, #8
+    orig[1] = 0xD61F0220;   // BR  X17
     ((uint64_t *)(orig + 2))[0] = (uint64_t)replacement;
 
-    __builtin___clear_cache((char *)target, (char *)(target + 16));
+    // Cache flush for hooked function
+    __builtin___clear_cache((char *)target, (char *)target + 16);
 
-    *trampoline_out = tramp;
+    *trampoline_out = (void *)(code + 1);  // point past BTI to original instructions
     return 0;
 }
 
@@ -116,21 +138,21 @@ Java_com_example_datespoof_NativeTimeHook_init(JNIEnv *env, jclass clz, jlong of
 
     void *gtod = dlsym(RTLD_DEFAULT, "gettimeofday");
     if (gtod) {
-        int r = arm64_hook(gtod, (void *)fake_gettimeofday, (void **)&orig_gettimeofday);
+        int r = arm64_hook(gtod, fake_gettimeofday, (void **)&orig_gettimeofday);
         if (r == 0) { LOGI("Hook OK: gettimeofday @ %p", gtod); ok++; }
         else        { LOGE("Hook FAIL: gettimeofday");             fail++; }
     } else { LOGE("dlsym gettimeofday failed"); fail++; }
 
     void *cgt = dlsym(RTLD_DEFAULT, "clock_gettime");
     if (cgt) {
-        int r = arm64_hook(cgt, (void *)fake_clock_gettime, (void **)&orig_clock_gettime);
+        int r = arm64_hook(cgt, fake_clock_gettime, (void **)&orig_clock_gettime);
         if (r == 0) { LOGI("Hook OK: clock_gettime @ %p", cgt); ok++; }
         else        { LOGE("Hook FAIL: clock_gettime");             fail++; }
     } else { LOGE("dlsym clock_gettime failed"); fail++; }
 
     void *t = dlsym(RTLD_DEFAULT, "time");
     if (t) {
-        int r = arm64_hook(t, (void *)fake_time, (void **)&orig_time);
+        int r = arm64_hook(t, fake_time, (void **)&orig_time);
         if (r == 0) { LOGI("Hook OK: time @ %p", t); ok++; }
         else        { LOGE("Hook FAIL: time");             fail++; }
     } else { LOGE("dlsym time failed"); fail++; }
