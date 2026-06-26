@@ -142,7 +142,7 @@ public class HookMain implements IXposedHookLoadPackage {
         ok += hookJavaTime("ZonedDateTime.now()", "java.time.ZonedDateTime", "now", cnt_ZonedDateTime_now);
         ok += hookJavaTime("OffsetDateTime.now()", "java.time.OffsetDateTime", "now", cnt_OffsetDateTime_now);
 
-        // ── 10. android.os.SystemClock.elapsedRealtime() (仅统计) ──
+        // ── 10. SystemClock.elapsedRealtime() ← 伪装 ──
         ok += hook("SystemClock.elapsedRealtime()",
                 () -> XposedHelpers.findAndHookMethod(
                     "android.os.SystemClock",
@@ -151,6 +151,21 @@ public class HookMain implements IXposedHookLoadPackage {
                     new XC_MethodHook() {
                         @Override protected void afterHookedMethod(MethodHookParam p) {
                             cnt_elapsedRealtime.incrementAndGet();
+                            long orig = (long) p.getResult();
+                            p.setResult(orig + timeOffsetMillis);
+                        }
+                    }));
+
+        // ── 11. SystemClock.uptimeMillis() ← 伪装 ──
+        ok += hook("SystemClock.uptimeMillis()",
+                () -> XposedHelpers.findAndHookMethod(
+                    "android.os.SystemClock",
+                    lpparam.classLoader,
+                    "uptimeMillis",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            long orig = (long) p.getResult();
+                            p.setResult(orig + timeOffsetMillis);
                         }
                     }));
 
