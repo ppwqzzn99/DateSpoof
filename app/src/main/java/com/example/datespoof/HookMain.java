@@ -3,232 +3,250 @@ package com.example.datespoof;
 import java.lang.reflect.Constructor;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
+/**
+ * DateSpoof 全量诊断版 — Hook 所有可能的 Java/Android 时间 API，
+ * 每个 Hook 点独立计数，5 秒后输出汇总，精确定位游戏实际使用的时间接口。
+ */
 public class HookMain implements IXposedHookLoadPackage {
 
-    // 模块自身的包名，硬编码，不使用 BuildConfig
-    private static final String MODULE_PACKAGE = "com.example.datespoof";
-    private static final String PREFS_FILE = "com.example.datespoof_preferences";
-
-    // 配置缓存 —— 加载一次，避免每次 Hook 回调都读文件
-    private static volatile boolean configLoaded = false;
-    private static volatile boolean enabled = false;
-    private static volatile long timeOffsetMillis = 0L;
-
-    // 用对象锁保护首次加载
-    private static final Object CONFIG_LOCK = new Object();
-
-    // 目标应用包名
     private static final String TARGET_PACKAGE = "com.zyyad.game";
+
+    // 目标日期：2026年7月30日 00:00:00.000
+    private static final int TARGET_YEAR  = 2026;
+    private static final int TARGET_MONTH = 7;
+    private static final int TARGET_DAY   = 30;
+
+    private static long timeOffsetMillis = 0L;
+
+    // 防重入
+    private static final ThreadLocal<Boolean> spoofedFlag = new ThreadLocal<>();
+
+    // 每个 Hook 点的调用计数器
+    private static final AtomicInteger
+            cnt_currentTimeMillis    = new AtomicInteger(0),
+            cnt_Date_long            = new AtomicInteger(0),
+            cnt_Calendar_setMillis   = new AtomicInteger(0),
+            cnt_Calendar_getMillis   = new AtomicInteger(0),
+            cnt_Calendar_getInstance = new AtomicInteger(0),
+            cnt_Instant_now          = new AtomicInteger(0),
+            cnt_LocalDate_now        = new AtomicInteger(0),
+            cnt_LocalDateTime_now    = new AtomicInteger(0),
+            cnt_ZonedDateTime_now    = new AtomicInteger(0),
+            cnt_OffsetDateTime_now   = new AtomicInteger(0),
+            cnt_elapsedRealtime      = new AtomicInteger(0),
+            cnt_nanoTime             = new AtomicInteger(0);
+
+    // 5 秒后输出汇总
+    private static volatile boolean summaryPrinted = false;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        // 仅对目标应用生效
-        if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
-            return;
-        }
+        if (!TARGET_PACKAGE.equals(lpparam.packageName)) return;
 
-        XposedBridge.log("[DateSpoof] 目标应用加载: " + lpparam.packageName);
+        // 计算偏移量
+        Calendar targetCal = Calendar.getInstance();
+        targetCal.set(TARGET_YEAR, TARGET_MONTH - 1, TARGET_DAY, 0, 0, 0);
+        targetCal.set(Calendar.MILLISECOND, 0);
+        timeOffsetMillis = targetCal.getTimeInMillis() - System.currentTimeMillis();
 
-        // 加载配置
-        ensureConfig();
+        XposedBridge.log("[DateSpoof] 目标 " + TARGET_YEAR + "-" + TARGET_MONTH + "-" + TARGET_DAY
+                + "  偏移 " + timeOffsetMillis + " ms (" + (timeOffsetMillis / 86400000) + " 天)");
 
-        if (!enabled) {
-            XposedBridge.log("[DateSpoof] 模块未启用，跳过 Hook");
-            return;
-        }
-
-        XposedBridge.log("[DateSpoof] 时间偏移量: " + timeOffsetMillis + " ms");
-
-        // ========== 1. Hook System.currentTimeMillis() ==========
-        // 安全做法：在 afterHookedMethod 中修改返回值，
-        // 不在回调内再次调用 currentTimeMillis()，避免递归
+        // ====== 0. Native 层 Hook：gettimeofday / clock_gettime / time ======
+        // 这才是关键 —— 游戏（尤其 Unity/IL2CPP）直接从 C 层调用 libc 时间函数
         try {
-            XposedHelpers.findAndHookMethod(
-                java.lang.System.class,
-                "currentTimeMillis",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        ensureConfig();
-                        if (!enabled) return;
-                        long original = (long) param.getResult();
-                        param.setResult(original + timeOffsetMillis);
-                    }
-                }
-            );
-            XposedBridge.log("[DateSpoof] ✓ System.currentTimeMillis Hook 成功");
+            NativeTimeHook.init(timeOffsetMillis);
+            XposedBridge.log("[DateSpoof] ✓ Native Hook 已初始化");
         } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ System.currentTimeMillis Hook 失败: " + t.getMessage());
+            XposedBridge.log("[DateSpoof] ✗ Native Hook 失败: " + t.getMessage());
         }
 
-        // ========== 2. Hook java.util.Date 所有构造器 ==========
-        // Date() 无参构造内部调用 currentTimeMillis()，已被上面 Hook 覆盖
-        // Date(long) 传入时间戳，修改参数
-        try {
-            XposedHelpers.findAndHookConstructor(
-                Date.class,
-                long.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        ensureConfig();
-                        if (!enabled) return;
-                        long time = (long) param.args[0];
-                        param.args[0] = time + timeOffsetMillis;
-                    }
-                }
-            );
-            XposedBridge.log("[DateSpoof] ✓ Date(long) Hook 成功");
-        } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Date(long) Hook 失败: " + t.getMessage());
-        }
+        XposedBridge.log("[DateSpoof] 正在安装 Java 层 hook...");
 
-        // Hook Date 所有其他构造器（如 Date(int year, int month, int day) 等）
-        try {
-            for (Constructor<?> ctor : Date.class.getDeclaredConstructors()) {
-                if (ctor.getParameterCount() == 0) continue;  // 无参构造跳过
-                XposedBridge.hookAllConstructors(Date.class, new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        ensureConfig();
-                        if (!enabled) return;
-                        // Date 内部最终存储为毫秒时间戳（fastTime 字段）
-                        // 通过反射修改内部 fastTime
-                        try {
-                            long fastTime = XposedHelpers.getLongField(param.thisObject, "fastTime");
-                            XposedHelpers.setLongField(param.thisObject, "fastTime", fastTime + timeOffsetMillis);
-                        } catch (Throwable ignored) {}
-                    }
-                });
-                break; // hookAllConstructors 已经覆盖全部，跳出循环
-            }
-            XposedBridge.log("[DateSpoof] ✓ Date 全部构造器 Hook 成功");
-        } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Date 构造器 Hook 失败: " + t.getMessage());
-        }
+        int ok = 0, fail = 0;
 
-        // ========== 3. Hook Calendar.getTimeInMillis() ==========
-        try {
-            XposedHelpers.findAndHookMethod(
-                Calendar.class,
-                "getTimeInMillis",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        ensureConfig();
-                        if (!enabled) return;
-                        long original = (long) param.getResult();
-                        param.setResult(original + timeOffsetMillis);
-                    }
-                }
-            );
-            XposedBridge.log("[DateSpoof] ✓ Calendar.getTimeInMillis Hook 成功");
-        } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Calendar.getTimeInMillis Hook 失败: " + t.getMessage());
-        }
-
-        // ========== 4. Hook Calendar.setTimeInMillis(long) ==========
-        // 如果应用设置时间，也需要偏移回去，避免内部状态不一致
-        try {
-            XposedHelpers.findAndHookMethod(
-                Calendar.class,
-                "setTimeInMillis",
-                long.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        ensureConfig();
-                        if (!enabled) return;
-                        long time = (long) param.args[0];
-                        // 把"伪装时间"还原为"真实时间"存储，下次 getTimeInMillis 时再加偏移
-                        param.args[0] = time - timeOffsetMillis;
-                    }
-                }
-            );
-            XposedBridge.log("[DateSpoof] ✓ Calendar.setTimeInMillis Hook 成功");
-        } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Calendar.setTimeInMillis Hook 失败: " + t.getMessage());
-        }
-
-        // ========== 5. Hook Calendar.getInstance() 返回的实例 ==========
-        // 确保 getInstance() 返回的 Calendar 时间也被偏移
-        try {
-            XposedHelpers.findAndHookMethod(
-                Calendar.class,
-                "getInstance",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        ensureConfig();
-                        if (!enabled) return;
-                        Calendar cal = (Calendar) param.getResult();
-                        if (cal != null) {
-                            cal.setTimeInMillis(cal.getTimeInMillis() + timeOffsetMillis);
+        // ── 1. System.currentTimeMillis() ──
+        ok += hook("System.currentTimeMillis()",
+                () -> XposedHelpers.findAndHookMethod(System.class, "currentTimeMillis",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            cnt_currentTimeMillis.incrementAndGet();
+                            long orig = (long) p.getResult();
+                            p.setResult(orig + timeOffsetMillis);
+                            spoofedFlag.set(true);
                         }
-                    }
-                }
-            );
-            XposedBridge.log("[DateSpoof] ✓ Calendar.getInstance Hook 成功");
-        } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Calendar.getInstance Hook 失败: " + t.getMessage());
-        }
+                    }));
 
-        XposedBridge.log("[DateSpoof] 全部 Hook 安装完毕");
+        // ── 2. System.nanoTime() (不伪装, 仅统计) ──
+        ok += hook("System.nanoTime()",
+                () -> XposedHelpers.findAndHookMethod(System.class, "nanoTime",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            cnt_nanoTime.incrementAndGet();
+                        }
+                    }));
+
+        // ── 3. Date(long) ──
+        ok += hook("Date(long)",
+                () -> XposedHelpers.findAndHookConstructor(Date.class, long.class,
+                    new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam p) {
+                            cnt_Date_long.incrementAndGet();
+                            long t = (long) p.args[0];
+                            Boolean s = spoofedFlag.get(); spoofedFlag.remove();
+                            if (!Boolean.TRUE.equals(s)) p.args[0] = t + timeOffsetMillis;
+                        }
+                    }));
+
+        // ── 4. Calendar.setTimeInMillis(long) ──
+        ok += hook("Calendar.setTimeInMillis()",
+                () -> XposedHelpers.findAndHookMethod(Calendar.class, "setTimeInMillis", long.class,
+                    new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam p) {
+                            cnt_Calendar_setMillis.incrementAndGet();
+                            long t = (long) p.args[0];
+                            Boolean s = spoofedFlag.get(); spoofedFlag.remove();
+                            if (!Boolean.TRUE.equals(s)) p.args[0] = t + timeOffsetMillis;
+                        }
+                    }));
+
+        // ── 5. Calendar.getTimeInMillis() ──
+        ok += hook("Calendar.getTimeInMillis()",
+                () -> XposedHelpers.findAndHookMethod(Calendar.class, "getTimeInMillis",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            cnt_Calendar_getMillis.incrementAndGet();
+                            long orig = (long) p.getResult();
+                            p.setResult(orig + timeOffsetMillis);
+                        }
+                    }));
+
+        // ── 6. Calendar.getInstance() ──
+        ok += hook("Calendar.getInstance()",
+                () -> XposedHelpers.findAndHookMethod(Calendar.class, "getInstance",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            cnt_Calendar_getInstance.incrementAndGet();
+                            Calendar cal = (Calendar) p.getResult();
+                            if (cal != null) {
+                                try {
+                                    long t = XposedHelpers.getLongField(cal, "time");
+                                    XposedHelpers.setLongField(cal, "time", t + timeOffsetMillis);
+                                } catch (Throwable ignored) {}
+                            }
+                        }
+                    }));
+
+        // ── 7~9. java.time.* (Android 8+ 可用) ──
+        ok += hookJavaTime("Instant.now()", "java.time.Instant", "now", cnt_Instant_now);
+        ok += hookJavaTime("LocalDate.now()", "java.time.LocalDate", "now", cnt_LocalDate_now);
+        ok += hookJavaTime("LocalDateTime.now()", "java.time.LocalDateTime", "now", cnt_LocalDateTime_now);
+        ok += hookJavaTime("ZonedDateTime.now()", "java.time.ZonedDateTime", "now", cnt_ZonedDateTime_now);
+        ok += hookJavaTime("OffsetDateTime.now()", "java.time.OffsetDateTime", "now", cnt_OffsetDateTime_now);
+
+        // ── 10. SystemClock.elapsedRealtime() ← 伪装 ──
+        ok += hook("SystemClock.elapsedRealtime()",
+                () -> XposedHelpers.findAndHookMethod(
+                    "android.os.SystemClock",
+                    lpparam.classLoader,
+                    "elapsedRealtime",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            cnt_elapsedRealtime.incrementAndGet();
+                            long orig = (long) p.getResult();
+                            p.setResult(orig + timeOffsetMillis);
+                        }
+                    }));
+
+        // ── 11. SystemClock.uptimeMillis() ← 伪装 ──
+        ok += hook("SystemClock.uptimeMillis()",
+                () -> XposedHelpers.findAndHookMethod(
+                    "android.os.SystemClock",
+                    lpparam.classLoader,
+                    "uptimeMillis",
+                    new XC_MethodHook() {
+                        @Override protected void afterHookedMethod(MethodHookParam p) {
+                            long orig = (long) p.getResult();
+                            p.setResult(orig + timeOffsetMillis);
+                        }
+                    }));
+
+        XposedBridge.log("[DateSpoof] Hook 安装完毕: 成功 " + ok + " 个, 跳过 " + fail + " 个");
+
+        // 启动汇总线程
+        new Thread(() -> {
+            try { Thread.sleep(8000); } catch (InterruptedException e) {}
+            summaryPrinted = true;
+            XposedBridge.log("[DateSpoof] ╔══════════════════════════════════╗");
+            XposedBridge.log("[DateSpoof] ║   时间 API 调用统计 (8秒汇总)  ║");
+            XposedBridge.log("[DateSpoof] ╠══════════════════════════════════╣");
+            report("System.currentTimeMillis()",    cnt_currentTimeMillis);
+            report("System.nanoTime()",             cnt_nanoTime);
+            report("Date(long)",                   cnt_Date_long);
+            report("Calendar.setTimeInMillis()",    cnt_Calendar_setMillis);
+            report("Calendar.getTimeInMillis()",    cnt_Calendar_getMillis);
+            report("Calendar.getInstance()",        cnt_Calendar_getInstance);
+            report("Instant.now()",                cnt_Instant_now);
+            report("LocalDate.now()",              cnt_LocalDate_now);
+            report("LocalDateTime.now()",           cnt_LocalDateTime_now);
+            report("ZonedDateTime.now()",           cnt_ZonedDateTime_now);
+            report("OffsetDateTime.now()",          cnt_OffsetDateTime_now);
+            report("SystemClock.elapsedRealtime()", cnt_elapsedRealtime);
+            XposedBridge.log("[DateSpoof] ╚══════════════════════════════════╝");
+            if (cnt_currentTimeMillis.get() + cnt_Instant_now.get() + cnt_LocalDate_now.get()
+                    + cnt_Date_long.get() + cnt_Calendar_getInstance.get() < 1) {
+                XposedBridge.log("[DateSpoof] ★ 关键发现: Java 层时间 API 均未被调用");
+                XposedBridge.log("[DateSpoof] ★ 游戏极可能通过 Native 层获取时间 (gettimeofday/clock_gettime)");
+                XposedBridge.log("[DateSpoof] ★ 需要在 Native 层进行 PLT Hook 或使用 Zygisk 模块");
+            }
+        }, "DateSpoof-Summary").start();
+
+        XposedBridge.log("[DateSpoof] 诊断版已就绪，8 秒后输出统计。打开游戏正常操作即可。");
     }
 
-    /**
-     * 双重检查锁定加载配置 —— 线程安全，只加载一次。
-     * 后续可通过 XSharedPreferences.reload() + hasFileChanged() 热更新。
-     */
-    private static void ensureConfig() {
-        if (configLoaded) return;
+    // ── 辅助: 普通 hook ──
+    private int hook(String name, Runnable action) {
+        try {
+            action.run();
+            XposedBridge.log("[DateSpoof] ✓ " + name);
+            return 1;
+        } catch (Throwable t) {
+            XposedBridge.log("[DateSpoof] ✗ " + name + " — " + t.getMessage());
+            return 0;
+        }
+    }
 
-        synchronized (CONFIG_LOCK) {
-            if (configLoaded) return;
+    // ── 辅助: java.time 静态方法 hook ──
+    private int hookJavaTime(String label, String className, String methodName, AtomicInteger counter) {
+        try {
+            Class<?> clz = Class.forName(className);
+            XposedHelpers.findAndHookMethod(clz, methodName,
+                new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam p) {
+                        counter.incrementAndGet();
+                        // 这些 now() 方法内部最终依赖 currentTimeMillis，不额外处理
+                    }
+                });
+            XposedBridge.log("[DateSpoof] ✓ " + label);
+            return 1;
+        } catch (Throwable t) {
+            XposedBridge.log("[DateSpoof] — " + label + " (跳过: " + t.getMessage() + ")");
+            return 0;
+        }
+    }
 
-            try {
-                XSharedPreferences prefs = new XSharedPreferences(MODULE_PACKAGE, PREFS_FILE);
-                prefs.reload();
-
-                enabled = prefs.getBoolean("enabled", true);
-
-                if (enabled) {
-                    int year = prefs.getInt("year", 2025);
-                    int month = prefs.getInt("month", 1);
-                    int day = prefs.getInt("day", 1);
-
-                    // 计算目标日期零点的毫秒时间戳
-                    // Calendar.MONTH 从 0 开始，用户输入的是自然月 (1-12)
-                    Calendar targetCal = Calendar.getInstance();
-                    targetCal.set(year, month - 1, day, 0, 0, 0);
-                    targetCal.set(Calendar.MILLISECOND, 0);
-                    long targetMillis = targetCal.getTimeInMillis();
-
-                    // 获取真实当前时间（此时 Hook 尚未生效，返回真实值）
-                    long realMillis = System.currentTimeMillis();
-
-                    // 偏移量 = 目标时间 - 真实时间
-                    timeOffsetMillis = targetMillis - realMillis;
-
-                    XposedBridge.log("[DateSpoof] 目标日期: " + year + "-" + month + "-" + day);
-                    XposedBridge.log("[DateSpoof] 目标毫秒: " + targetMillis);
-                    XposedBridge.log("[DateSpoof] 真实毫秒: " + realMillis);
-                    XposedBridge.log("[DateSpoof] 偏移毫秒: " + timeOffsetMillis);
-                }
-            } catch (Throwable t) {
-                XposedBridge.log("[DateSpoof] 配置加载失败: " + t.getMessage());
-                enabled = false;
-            }
-
-            configLoaded = true;
+    private void report(String label, AtomicInteger c) {
+        int n = c.get();
+        if (n > 0) {
+            XposedBridge.log("[DateSpoof]   >>> " + label + ": " + n + " 次");
         }
     }
 }

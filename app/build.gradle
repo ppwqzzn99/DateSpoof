@@ -1,6 +1,5 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
 }
 
 android {
@@ -13,6 +12,16 @@ android {
         targetSdk 36
         versionCode 1
         versionName "1.0"
+
+        ndk {
+            abiFilters "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=none"
+            }
+        }
     }
 
     buildTypes {
@@ -27,14 +36,20 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = '17'
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
     }
+}
+
+// 强制 UTF-8 编译，防止 Windows 中文系统下源码中文乱码
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
 }
 
 dependencies {
     compileOnly project(':xposed-api')
-    implementation 'androidx.core:core-ktx:1.15.0'
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.preference:preference-ktx:1.2.1'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
 }
