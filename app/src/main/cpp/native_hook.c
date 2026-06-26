@@ -152,7 +152,7 @@ static int arm64_hook(void *target, void *replacement, void **trampoline_out) {
     // --- Step 5: write hook shell (atomic 16-byte store) ---
     // When compiler emits 2× STR + 1× STR for this, the window is ~3 instructions.
     // Acceptable race condition window in LSPosed init context.
-    orig[0] = 0x58000071;   // LDR X17, #8
+    orig[0] = 0x58000051;   // LDR X17, #8 (64-bit load from PC+8)
     orig[1] = 0xD61F0220;   // BR  X17
     ((uint64_t *)(orig + 2))[0] = (uint64_t)replacement;
 

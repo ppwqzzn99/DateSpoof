@@ -61,13 +61,18 @@ public class HookMain implements IXposedHookLoadPackage {
                 + "  偏移 " + timeOffsetMillis + " ms (" + (timeOffsetMillis / 86400000) + " 天)");
 
         // ====== 0. Native 层 Hook：gettimeofday / clock_gettime / time ======
-        // 这才是关键 —— 游戏（尤其 Unity/IL2CPP）直接从 C 层调用 libc 时间函数
-        try {
-            NativeTimeHook.init(timeOffsetMillis);
-            XposedBridge.log("[DateSpoof] ✓ Native Hook 已初始化");
-        } catch (Throwable t) {
-            XposedBridge.log("[DateSpoof] ✗ Native Hook 失败: " + t.getMessage());
-        }
+        // 在后台线程初始化，避免阻塞主线程（阻塞会直接导致游戏白屏）
+        final long nativeOffset = timeOffsetMillis;
+        new Thread(() -> {
+            try {
+                // 等游戏初始化完成后再装 hook，避免干扰启动流程
+                Thread.sleep(2000);
+                NativeTimeHook.init(nativeOffset);
+                XposedBridge.log("[DateSpoof] ✓ Native Hook 已初始化 (offset=" + (nativeOffset/86400000) + "天)");
+            } catch (Throwable t) {
+                XposedBridge.log("[DateSpoof] ✗ Native Hook 失败: " + t.getMessage());
+            }
+        }, "DateSpoof-NativeInit").start();
 
         XposedBridge.log("[DateSpoof] 正在安装 Java 层 hook...");
 
